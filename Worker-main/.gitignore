@@ -1,0 +1,28 @@
+# Node dependencies
+node_modules/
+
+# Output directories (from tsc)
+dist/
+*.tsbuildinfo
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS/Editor artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Docker-related (if any local setup)
+docker-compose.override.yml
+docker-compose.yml

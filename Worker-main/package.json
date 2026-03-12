@@ -1,0 +1,26 @@
+{
+  "name": "worker",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "npx tsc",
+    "start": "node dist/worker.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@langchain/cohere": "^0.3.4",
+    "@langchain/community": "^0.3.47",
+    "@langchain/core": "^0.3.60",
+    "@langchain/google-genai": "^0.2.13",
+    "@langchain/qdrant": "^0.1.2",
+    "axios": "^1.10.0",
+    "bullmq": "^5.54.3",
+    "langchain": "^0.3.29",
+    "pdf-parse": "^1.1.1"
+  }
+}
