@@ -2,7 +2,7 @@
   "name": "worker",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "dist/worker.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "npx tsc",
@@ -20,6 +20,8 @@
     "@langchain/qdrant": "^0.1.2",
     "axios": "^1.10.0",
     "bullmq": "^5.54.3",
+    "dotenv": "^17.4.2",
+    "ioredis": "^5.10.1",
     "langchain": "^0.3.29",
     "pdf-parse": "^1.1.1"
   }

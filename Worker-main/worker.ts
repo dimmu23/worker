@@ -1,3 +1,4 @@
+import "dotenv/config";
 import {  Worker } from "bullmq";
 import { QdrantVectorStore } from "@langchain/qdrant";
 import { PromptTemplate } from "@langchain/core/prompts";
@@ -10,11 +11,20 @@ import os from 'os';
 import path from "path";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { RunnableSequence } from "@langchain/core/runnables";
-import redis from "./lib/redis";
+import { redisConnection } from "./lib/redis";
+
+const apiBaseUrl = process.env.API_BASE_URL || "http://localhost:3000";
+const downloadTimeoutMs = Number(process.env.PDF_DOWNLOAD_TIMEOUT_MS || 30000);
+const downloadMaxAttempts = Number(process.env.PDF_DOWNLOAD_RETRIES || 3);
 
 // const redisConnection = {
-//     url: process.env.REDIS_URL || 'redis://localhost:6379'
+//     host: process.env.REDIS_HOST || 'localhost',
+//     port: Number(process.env.REDIS_PORT) || 6379
 // }
+
+// const redisConnection = new IORedis("redis://default:BBEFuBpgdRcjapOtuuPsKVaihyxEZewS@turntable.proxy.rlwy.net:33985",{
+//     maxRetriesPerRequest: null
+// });
 
 const headingKeywords = [
   "abstract",
@@ -38,15 +48,18 @@ const worker = new Worker("file-upload-queue",
             const { paperId, pdfUrl } = job.data;
             console.log("Job received:", job.data);
 
+            console.log(`[${paperId}] Downloading PDF`);
             const localPath = await downloadPDF(pdfUrl);
+
+            console.log(`[${paperId}] Loading PDF content`);
             const loader = new PDFLoader(localPath);
             const docs = await loader.load();
 
-            const fullText = docs.map((doc: any) => doc.pageContent).join("\n");
+            const fullText = docs.map((doc) => doc.pageContent).join("\n");
 
             const model = new ChatGoogleGenerativeAI({
-                model: "gemini-2.0-flash",
-                apiKey: "AIzaSyArmAmGCdWzihI5Q78TAsrN3H5T05X_aYY"
+                model: "gemini-2.5-flash",
+                apiKey: process.env.GOOGLE_API_KEY
             });
 
             const prompt = PromptTemplate.fromTemplate(`
@@ -78,24 +91,31 @@ const worker = new Worker("file-upload-queue",
                 model    // step 2: call the model with filled prompt
             ]);
 
-            const result = await chain.invoke({
-                paper: fullText
-            });
+            console.log(`[${paperId}] Generating overview with Gemini`);
+            let result;
+            try {
+                result = await chain.invoke({
+                    paper: fullText
+                });
+            } catch (err) {
+                console.error(`[${paperId}] Failed to generate overview`, err);
+                throw err;
+            }
 
             const overview = extractText(result.content);
 
-            // console.log(content);
+            console.log(`[${paperId}] Saving overview to main app`);
 
-            const res = await axios.post("https://paperfy.vercel.app/api/saveoverview",
+            const res = await axios.post(`${apiBaseUrl}/api/saveoverview`,
                 {
                     paperId,
                     overview
                 }
             )
 
-            console.log(res.data);
+            console.log(`[${paperId}] Overview saved`, res.status);
             
-
+            console.log(`[${paperId}] Splitting document for embeddings`);
             const newDocs = docs.map(doc => {
                 doc.pageContent = doc.pageContent.replace(/\n[A-Z][A-Z\s\-]{2,}\n/g, match =>
                     `\n${match.trim().toLowerCase()}\n`
@@ -123,12 +143,13 @@ const worker = new Worker("file-upload-queue",
 
             const embeddings = new CohereEmbeddings({
                 model: "embed-english-v3.0",
-                apiKey: "pxHHZy29DAsfH6TybW85qOuGB7OnHDfEcfaBUy0j"
+                apiKey: process.env.COHERE_API_KEY
             });
 
+            console.log(`[${paperId}] Writing embeddings to Qdrant`);
             const vectorStore = await QdrantVectorStore.fromDocuments(splitDocs, embeddings, {
-                url: "https://c1ced9de-55f4-4ece-9fb5-12d97bf51073.us-west-2-0.aws.cloud.qdrant.io",
-                apiKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.Qkz1tL1HMpcIgXkHc8WzP9jJZGd8xMdKt8VnpfecDKI",
+                url: process.env.QDRANT_URL!,
+                apiKey: process.env.QDRANT_API_KEY!,
                 collectionName: `pdf-${paperId}`,
             });
 
@@ -137,20 +158,53 @@ const worker = new Worker("file-upload-queue",
             console.log("Vector embeddings added");
         } catch (err) {
             console.error("Worker failed:", err);
+            throw err;
         }  
     },
     {
         concurrency: 100,
-        connection: redis
+        connection: redisConnection
     }
 )
 
+worker.on("failed", (job, err) => {
+    console.error(`Job ${job?.id ?? "unknown"} failed for paper ${job?.data?.paperId ?? "unknown"}:`, err.message);
+});
+
 
 async function downloadPDF(pdfUrl: string): Promise<string> {
-    const res = await axios.get(pdfUrl, { responseType: 'arraybuffer' });
-    const tempFilePath = path.join(os.tmpdir(), `temp-${Date.now()}.pdf`);
-    await fs.writeFile(tempFilePath, res.data);
-    return tempFilePath;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= downloadMaxAttempts; attempt++) {
+        try {
+            console.log(`Downloading PDF attempt ${attempt}/${downloadMaxAttempts}`);
+
+            const res = await axios.get(pdfUrl, {
+                responseType: 'arraybuffer',
+                timeout: downloadTimeoutMs,
+                maxRedirects: 5,
+                headers: {
+                    Accept: 'application/pdf,application/octet-stream,*/*',
+                },
+            });
+
+            const tempFilePath = path.join(os.tmpdir(), `temp-${Date.now()}.pdf`);
+            await fs.writeFile(tempFilePath, res.data);
+            return tempFilePath;
+        } catch (err: any) {
+            lastError = err;
+            const code = err?.code || "UNKNOWN";
+            const message = err?.message || "Unknown download error";
+            console.error(`PDF download attempt ${attempt} failed [${code}]: ${message}`);
+
+            if (attempt < downloadMaxAttempts) {
+                const delayMs = attempt * 2000;
+                await new Promise((resolve) => setTimeout(resolve, delayMs));
+            }
+        }
+    }
+
+    throw lastError;
 }
 
 function extractText(content: any): string {
